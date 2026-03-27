@@ -1,7 +1,7 @@
 {
   "name": "slack-sales-bot",
-  "version": "1.0.0",
-  "description": "Slack bot tracking sales deals for Polish sales team",
+  "version": "2.0.0",
+  "description": "Slack bot tracking sales deals for Polish sales team with Redis persistence",
   "main": "dist/index.js",
   "scripts": {
     "build": "tsc",
@@ -9,7 +9,8 @@
     "dev": "tsx src/index.ts"
   },
   "dependencies": {
-    "@slack/bolt": "^3.17.1"
+    "@slack/bolt": "^3.17.1",
+    "redis": "^4.6.12"
   },
   "devDependencies": {
     "@types/node": "^20.11.0",
