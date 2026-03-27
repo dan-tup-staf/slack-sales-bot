@@ -1,6 +1,18 @@
 import { App } from "@slack/bolt";
 import http from "http";
+import { createClient } from "redis";
 
+// ---------------------------------------------------------------------------
+// Redis setup
+// ---------------------------------------------------------------------------
+const redisUrl = process.env.REDIS_URL || "redis://localhost:6379";
+const redis = createClient({ url: redisUrl });
+
+redis.on("error", (err) => console.error("❌ Redis error:", err));
+
+// ---------------------------------------------------------------------------
+// Slack app
+// ---------------------------------------------------------------------------
 const app = new App({
   token: process.env.SLACK_BOT_TOKEN,
   signingSecret: process.env.SLACK_SIGNING_SECRET,
@@ -15,7 +27,7 @@ const SALES_KEYWORDS =
   /zielone\s+[sś]wiat[łl]o|upsell|wpad[łl]o\s+zam[oó]wienie|podpisane\s+zam[oó]wienie|dorzucam|formularz\s+wpad[łl]|mamy\s+decyzj[eę]/i;
 
 // ---------------------------------------------------------------------------
-// Quotas – per person per month for 2026
+// Quotas – per person per month for 2026 (from your spreadsheet)
 // ---------------------------------------------------------------------------
 const QUOTAS: Record<string, Record<string, number>> = {
   "Filip Sobel": {
@@ -44,8 +56,83 @@ const QUOTAS: Record<string, Record<string, number>> = {
   },
 };
 
-// salesData["2026-03"]["U123456"] = { total: 5000, deals: 2 }
-const salesData: Record<string, Record<string, { total: number; deals: number }>> = {};
+// ---------------------------------------------------------------------------
+// Initial state from Google Sheets (March 2026 data)
+// This will only be used if Redis is empty for that month
+// ---------------------------------------------------------------------------
+const INITIAL_STATE: Record<string, Record<string, { total: number; deals: number }>> = {
+  "2026-01": {
+    "Filip Sobel": { total: 169349, deals: 0 },
+    "Michał Łaszkiewicz": { total: 16896, deals: 0 },
+    "Łukasz Półchłopek": { total: 45476, deals: 0 },
+    "Damian": { total: 67369, deals: 0 },
+  },
+  "2026-02": {
+    "Filip Sobel": { total: 97322, deals: 0 },
+    "Michał Łaszkiewicz": { total: 29625, deals: 0 },
+    "Łukasz Półchłopek": { total: 14477, deals: 0 },
+    "Damian": { total: 77602, deals: 0 },
+  },
+  "2026-03": {
+    "Filip Sobel": { total: 118262, deals: 0 },
+    "Michał Łaszkiewicz": { total: 43487, deals: 0 },
+    "Łukasz Półchłopek": { total: 19976, deals: 0 },
+    "Damian": { total: 64228, deals: 0 },
+  },
+};
+
+// ---------------------------------------------------------------------------
+// Name mapping: Slack display name → canonical name for quotas
+// ---------------------------------------------------------------------------
+const NAME_MAPPING: Record<string, string> = {
+  "filip": "Filip Sobel",
+  "sobel": "Filip Sobel",
+  "wena": "Michał Łaszkiewicz",
+  "michał": "Michał Łaszkiewicz",
+  "łaszkiewicz": "Michał Łaszkiewicz",
+  "łukasz": "Łukasz Półchłopek",
+  "półchłopek": "Łukasz Półchłopek",
+  "polchlopek": "Łukasz Półchłopek",
+  "damian": "Damian",
+};
+
+function getCanonicalName(displayName: string): string | null {
+  const dn = displayName.toLowerCase();
+  for (const [key, canonical] of Object.entries(NAME_MAPPING)) {
+    if (dn.includes(key)) {
+      return canonical;
+    }
+  }
+  return null;
+}
+
+// ---------------------------------------------------------------------------
+// Redis helpers
+// ---------------------------------------------------------------------------
+async function getSalesData(monthKey: string, canonicalName: string): Promise<{ total: number; deals: number }> {
+  const key = `sales:${monthKey}:${canonicalName}`;
+  const data = await redis.get(key);
+  
+  if (data) {
+    return JSON.parse(data);
+  }
+  
+  // Check if we have initial state for this month/person
+  const initial = INITIAL_STATE[monthKey]?.[canonicalName];
+  if (initial) {
+    // Save initial state to Redis
+    await redis.set(key, JSON.stringify(initial));
+    console.log(`[INIT] Loaded initial state for ${canonicalName} ${monthKey}: ${initial.total} PLN`);
+    return initial;
+  }
+  
+  return { total: 0, deals: 0 };
+}
+
+async function saveSalesData(monthKey: string, canonicalName: string, data: { total: number; deals: number }): Promise<void> {
+  const key = `sales:${monthKey}:${canonicalName}`;
+  await redis.set(key, JSON.stringify(data));
+}
 
 // ---------------------------------------------------------------------------
 // Amount extraction
@@ -134,23 +221,8 @@ async function getDisplayName(userId: string): Promise<string> {
   }
 }
 
-function findQuota(displayName: string, monthKey: string): number | null {
-  const dn = displayName.toLowerCase();
-  for (const [name, months] of Object.entries(QUOTAS)) {
-    const key = name.toLowerCase();
-    const parts = key.split(" ");
-    const firstName = parts[0];
-    const lastName = parts[parts.length - 1];
-    if (
-      dn.includes(key) ||
-      key.includes(dn) ||
-      dn.includes(firstName) ||
-      dn.includes(lastName)
-    ) {
-      return months[monthKey] ?? null;
-    }
-  }
-  return null;
+function findQuota(canonicalName: string, monthKey: string): number | null {
+  return QUOTAS[canonicalName]?.[monthKey] ?? null;
 }
 
 const CONGRATS = [
@@ -204,25 +276,39 @@ app.message(SALES_KEYWORDS, async ({ message, say }) => {
 
     const userId = msg.user;
     const displayName = await getDisplayName(userId);
+    const canonicalName = getCanonicalName(displayName);
     const monthKey = getMonthKey();
 
-    // Ensure nested structure exists
-    salesData[monthKey] ??= {};
-    salesData[monthKey][userId] ??= { total: 0, deals: 0 };
+    if (!canonicalName) {
+      console.log(`[DEAL] Unknown user: ${displayName} – skipping quota tracking`);
+      // Still respond but without quota info
+      const congrats = CONGRATS[Math.floor(Math.random() * CONGRATS.length)];
+      await say({
+        text: `🎉 ${congrats}, <@${userId}>!\n\n💰 Ten deal: *${formatAmount(amount)} PLN*`,
+        thread_ts: msg.ts,
+      });
+      return;
+    }
 
-    // Accumulate
-    salesData[monthKey][userId].total += amount;
-    salesData[monthKey][userId].deals += 1;
+    // Get current data from Redis (or initial state)
+    const currentData = await getSalesData(monthKey, canonicalName);
+    
+    // Update
+    currentData.total += amount;
+    currentData.deals += 1;
+    
+    // Save to Redis
+    await saveSalesData(monthKey, canonicalName, currentData);
 
-    const { total: newTotal, deals: dealCount } = salesData[monthKey][userId];
+    const { total: newTotal, deals: dealCount } = currentData;
 
     const monthName = getPolishMonthName();
     console.log(
-      `[DEAL] ${displayName} +${formatAmount(amount)} PLN → ${monthName} total: ${formatAmount(newTotal)} PLN (${dealCount} deals)`
+      `[DEAL] ${canonicalName} +${formatAmount(amount)} PLN → ${monthName} total: ${formatAmount(newTotal)} PLN (${dealCount} deals via bot)`
     );
 
     const congrats = CONGRATS[Math.floor(Math.random() * CONGRATS.length)];
-    const quota = findQuota(displayName, monthKey);
+    const quota = findQuota(canonicalName, monthKey);
 
     const lines: string[] = [
       `🎉 ${congrats}, <@${userId}>!`,
@@ -240,7 +326,7 @@ app.message(SALES_KEYWORDS, async ({ message, say }) => {
       lines.push(
         `📊 Twój ${monthLabel}: *${formatAmount(newTotal)} PLN* / ${formatAmount(quota)} PLN (${percent}%)`,
         `${bar} ${percent}%`,
-        `🔢 Liczba dealów: ${dealCount}`,
+        `🔢 Liczba dealów (via bot): ${dealCount}`,
       );
       if (diff > 0) {
         lines.push(`🎯 Do celu brakuje: *${formatAmount(diff)} PLN*`);
@@ -250,7 +336,7 @@ app.message(SALES_KEYWORDS, async ({ message, say }) => {
     } else {
       lines.push(
         `📊 Twój ${monthLabel}: *${formatAmount(newTotal)} PLN*`,
-        `🔢 Liczba dealów: ${dealCount}`,
+        `🔢 Liczba dealów (via bot): ${dealCount}`,
       );
     }
 
@@ -318,6 +404,10 @@ app.error(async (error) => {
 // ---------------------------------------------------------------------------
 (async () => {
   try {
+    // Connect to Redis first
+    await redis.connect();
+    console.log("✅ Redis połączony");
+
     await app.start();
     botStartedAt = new Date();
     botStatus = "running";
@@ -327,6 +417,7 @@ app.error(async (error) => {
     console.log(`✅ Połączono jako: ${auth.user} (team: ${auth.team})`);
     console.log(`⚡ Slack sales bot działa w Socket Mode!`);
     console.log(`📋 Słowa kluczowe: ${SALES_KEYWORDS.toString()}`);
+    console.log(`💾 Dane zapisywane w Redis`);
 
     // List joined channels
     try {
