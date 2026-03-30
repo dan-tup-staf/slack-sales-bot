@@ -426,8 +426,7 @@ app.error(async (error) => {
         exclude_archived: true,
         limit: 200,
       });
-      const joined = (convs.channels ?? []).filter((c: Record<string, unknown>) => c["is_member"]);
-      if (joined.length === 0) {
+const joined = (convs.channels ?? []).filter((c) => c.is_member);      if (joined.length === 0) {
         console.warn("⚠️  Bot NIE jest członkiem żadnego kanału! Zaproś: /invite @bot");
       } else {
         console.log(`📢 Bot jest w ${joined.length} kanale(ach)`);
