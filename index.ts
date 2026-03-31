@@ -1,6 +1,18 @@
 import { App } from "@slack/bolt";
 import http from "http";
+import { createClient } from "redis";
 
+// ---------------------------------------------------------------------------
+// Redis setup
+// ---------------------------------------------------------------------------
+const redisUrl = process.env.REDIS_URL || "redis://localhost:6379";
+const redis = createClient({ url: redisUrl });
+
+redis.on("error", (err) => console.error("❌ Redis error:", err));
+
+// ---------------------------------------------------------------------------
+// Slack app
+// ---------------------------------------------------------------------------
 const app = new App({
   token: process.env.SLACK_BOT_TOKEN,
   signingSecret: process.env.SLACK_SIGNING_SECRET,
@@ -15,37 +27,161 @@ const SALES_KEYWORDS =
   /zielone\s+[sś]wiat[łl]o|upsell|wpad[łl]o\s+zam[oó]wienie|podpisane\s+zam[oó]wienie|dorzucam|formularz\s+wpad[łl]|mamy\s+decyzj[eę]/i;
 
 // ---------------------------------------------------------------------------
-// Quotas – per person per month for 2026
+// Maksymy / Cytaty
 // ---------------------------------------------------------------------------
-const QUOTAS: Record<string, Record<string, number>> = {
-  "Filip Sobel": {
-    "2026-01": 104000, "2026-02": 104000, "2026-03": 104000,
-    "2026-04": 112000, "2026-05": 112000, "2026-06": 120000,
-    "2026-07": 128000, "2026-08": 136000, "2026-09": 144000,
-    "2026-10": 160000, "2026-11": 176000, "2026-12": 200000,
+const MAXIMS = [
+  // Sun Tzu
+  "Najwyższym osiągnięciem jest pokonanie wroga bez walki.",
+  "Zwycięscy wojownicy najpierw wygrywają, a potem idą na wojnę; pokonani najpierw idą na wojnę, a potem szukają zwycięstwa.",
+  "Poznaj swojego wroga i poznaj samego siebie, a w stu bitwach nie zaznasz porażki.",
+  "Planuj to, co trudne, dopóki jest łatwe; rób to, co wielkie, dopóki jest małe.",
+  "Strategia bez taktyki to najwolniejsza droga do zwycięstwa. Taktyka bez strategii to zgiełk przed porażką.",
+  "Cała sztuka wojny opiera się na oszustwie.",
+  "Kiedy jesteś zdolny do ataku, sprawiaj wrażenie niezdolnego; kiedy używasz sił, sprawiaj wrażenie nieaktywnego.",
+  "Pojawiaj się tam, gdzie cię nie oczekują; uderzaj tam, gdzie nie są przygotowani.",
+  "Bądź szybki jak wiatr, powolny jak las, agresywny jak ogień i nieruchomy jak góra.",
+  "Niech twoje plany będą mroczne i nieprzeniknione jak noc, a kiedy uderzasz, spadaj jak piorun.",
+  "Unikaj tego, co silne, a uderzaj w to, co słabe.",
+  "W samym środku chaosu kryje się okazja.",
+  "Woda dostosowuje swój bieg do gruntu, po którym płynie; żołnierz wypracowuje zwycięstwo w odniesieniu do przeciwnika.",
+  "Nie ma przykładu narodu, który skorzystałby na długotrwałej wojnie.",
+  "Zmuś przeciwnika do podjęcia walki tam, gdzie ty chcesz, i wtedy, kiedy ty chcesz.",
+  "Traktuj swoich ludzi jak ukochanych synów, a pójdą za tobą w najgłębsze doliny.",
+  "Generał, który maszeruje naprzód nie pragnąc sławy i wycofuje się nie bojąc się hańby, jest skarbem królestwa.",
+  "Jeśli rozkazy są jasne, a żołnierze mimo to nie słuchają, wina leży po stronie oficerów.",
+  "Największym błędem jest lekceważenie przeciwnika.",
+  "Kto wie, kiedy może walczyć, a kiedy nie – zwycięży.",
+
+  // Robert Cialdini
+  "Ludzie nie kupują Twoich produktów, kupują Twoją wiarygodność.",
+  "Reguła wzajemności jest tak silna, że potrafi wymusić zgodę nawet na prośbę, która byłaby odrzucona.",
+  "Jesteśmy najbardziej skłonni ulec komuś, kogo lubimy – a lubimy tych, którzy są do nas podobni.",
+  "Najskuteczniejszym sposobem na przekonanie kogoś jest pokazanie, że inni już to robią.",
+  "Rzeczy stają się bardziej atrakcyjne w naszych oczach w miarę, jak stają się mniej dostępne.",
+  "Często nie podejmujemy decyzji na podstawie wszystkich informacji, lecz na podstawie jednego wyzwalacza.",
+  "Zobowiązanie podjęte publicznie staje się więzieniem, z którego rzadko chcemy uciec.",
+  "Jeśli chcesz, aby ktoś Ci pomógł, najpierw daj mu coś od siebie.",
+  "Strata boli nas bardziej, niż cieszy nas zysk o tej samej wartości.",
+  "Ekspertyza to nie tylko wiedza, to sposób, w jaki prezentujesz się światu.",
+  "To, na czym skupiamy uwagę, wydaje nam się ważniejsze tylko dlatego, że na tym się skupiamy.",
+  "Proces perswazji nie zaczyna się od argumentów, ale od przygotowania gruntu pod ich przyjęcie.",
+  "Zadaj odpowiednie pytanie na początku rozmowy, a ustawisz mentalne ramy dla dalszej dyskusji.",
+  "Ludzie wierzą, że to, co przykuwa ich uwagę, jest przyczyną zdarzeń.",
+  "Najlepszy negocjator sprawia, że druga strona czuje się mądra, zanim padnie oferta.",
+  "Prawdziwy autorytet nie potrzebuje siły; potrzebuje dowodów na kompetencję i uczciwość.",
+  "Przyznanie się do małej słabości na początku buduje gigantyczne zaufanie do wielkich zalet.",
+  "Wpływ to nie manipulacja; to umiejętność wydobycia na światło dzienne argumentów.",
+  "Słowo „ponieważ" ma magiczną moc – ludzie chętniej spełnią prośbę, jeśli podasz im powód.",
+  "Najtrudniej jest przekonać kogoś do zmiany, jeśli uderza ona w jego poczucie tożsamości.",
+
+  // Ferdynand Kiepski
+  "W tym kraju nie ma pracy dla ludzi z moim wykształceniem.",
+  "Zarobić, żeby się nie narobić.",
+  "Halinka, śpisz? Bo mi się koncepcja narodziła!",
+  "Pośredniak to jest instytucja do upodlania uczciwego bezrobotnego.",
+  "Paździoch to jest menda i pasożyt społeczny.",
+  "Panie Boczek, pan masz umysł jak dziecko, tylko w tym tłuszczu zatopiony.",
+  "Są na świecie rzeczy, o których się fizjologom nie śniło.",
+  "Nie będzie mi tu obcy element po korytarzu grasował!",
+  "Dobra flaszka nie jest zła.",
+  "Mocny Full to jest napój bogów.",
+  "Człowiek nie jest wielbłąd, pić musi.",
+  "Ja jestem człowiek kulturalny, tylko sytuacja mnie zmusza do chamstwa.",
+  "Życie to jest pasmo udręk i upokorzeń, przeplatane krótkimi chwilami przy piwie.",
+  "Halinka, nie bądź taka agresywna, bo ci żyłka pęknie!",
+  "Ja mam prawo do odpoczynku po ciężkim dniu nicnierobienia.",
+  "Co ty mi tu będziesz o kulturze mówiła, jak ty mi skarpetek nie wyprałaś!",
+  "Jeden bystry człowiek w tym domu wystarczy, i to jestem ja.",
+  "Babka! Gdzie masz rentę?!",
+];
+
+// ---------------------------------------------------------------------------
+// Emoji do losowania
+// ---------------------------------------------------------------------------
+const EMOJIS = ["💚", "🟢", "🟩", "🟠", "✅", "🤑"];
+
+function getRandomEmoji(): string {
+  return EMOJIS[Math.floor(Math.random() * EMOJIS.length)];
+}
+
+function getRandomMaxim(): string {
+  return MAXIMS[Math.floor(Math.random() * MAXIMS.length)];
+}
+
+// ---------------------------------------------------------------------------
+// Initial state from Google Sheets (March 2026 data)
+// ---------------------------------------------------------------------------
+const INITIAL_STATE: Record<string, Record<string, { total: number; deals: number }>> = {
+  "2026-01": {
+    "Filip Sobel": { total: 169349, deals: 0 },
+    "Michał Łaszkiewicz": { total: 16896, deals: 0 },
+    "Łukasz Półchłopek": { total: 45476, deals: 0 },
+    "Damian": { total: 67369, deals: 0 },
   },
-  "Michał Łaszkiewicz": {
-    "2026-01": 52000, "2026-02": 52000, "2026-03": 52000,
-    "2026-04": 56000, "2026-05": 56000, "2026-06": 60000,
-    "2026-07": 64000, "2026-08": 68000, "2026-09": 72000,
-    "2026-10": 80000, "2026-11": 88000, "2026-12": 100000,
+  "2026-02": {
+    "Filip Sobel": { total: 97322, deals: 0 },
+    "Michał Łaszkiewicz": { total: 29625, deals: 0 },
+    "Łukasz Półchłopek": { total: 14477, deals: 0 },
+    "Damian": { total: 77602, deals: 0 },
   },
-  "Łukasz Półchłopek": {
-    "2026-01": 52000, "2026-02": 52000, "2026-03": 52000,
-    "2026-04": 56000, "2026-05": 56000, "2026-06": 60000,
-    "2026-07": 64000, "2026-08": 68000, "2026-09": 72000,
-    "2026-10": 80000, "2026-11": 88000, "2026-12": 100000,
-  },
-  "Damian": {
-    "2026-01": 52000, "2026-02": 52000, "2026-03": 52000,
-    "2026-04": 56000, "2026-05": 56000, "2026-06": 60000,
-    "2026-07": 64000, "2026-08": 68000, "2026-09": 72000,
-    "2026-10": 80000, "2026-11": 88000, "2026-12": 100000,
+  "2026-03": {
+    "Filip Sobel": { total: 118262, deals: 0 },
+    "Michał Łaszkiewicz": { total: 43487, deals: 0 },
+    "Łukasz Półchłopek": { total: 19976, deals: 0 },
+    "Damian": { total: 64228, deals: 0 },
   },
 };
 
-// salesData["2026-03"]["U123456"] = { total: 5000, deals: 2 }
-const salesData: Record<string, Record<string, { total: number; deals: number }>> = {};
+// ---------------------------------------------------------------------------
+// Name mapping: Slack display name → canonical name
+// ---------------------------------------------------------------------------
+const NAME_MAPPING: Record<string, string> = {
+  "filip": "Filip Sobel",
+  "sobel": "Filip Sobel",
+  "wena": "Michał Łaszkiewicz",
+  "michał": "Michał Łaszkiewicz",
+  "łaszkiewicz": "Michał Łaszkiewicz",
+  "łukasz": "Łukasz Półchłopek",
+  "półchłopek": "Łukasz Półchłopek",
+  "polchlopek": "Łukasz Półchłopek",
+  "damian": "Damian",
+};
+
+function getCanonicalName(displayName: string): string | null {
+  const dn = displayName.toLowerCase();
+  for (const [key, canonical] of Object.entries(NAME_MAPPING)) {
+    if (dn.includes(key)) {
+      return canonical;
+    }
+  }
+  return null;
+}
+
+// ---------------------------------------------------------------------------
+// Redis helpers
+// ---------------------------------------------------------------------------
+async function getSalesData(monthKey: string, canonicalName: string): Promise<{ total: number; deals: number }> {
+  const key = `sales:${monthKey}:${canonicalName}`;
+  const data = await redis.get(key);
+  
+  if (data) {
+    return JSON.parse(data);
+  }
+  
+  const initial = INITIAL_STATE[monthKey]?.[canonicalName];
+  if (initial) {
+    await redis.set(key, JSON.stringify(initial));
+    console.log(`[INIT] Loaded initial state for ${canonicalName} ${monthKey}: ${initial.total} PLN`);
+    return initial;
+  }
+  
+  return { total: 0, deals: 0 };
+}
+
+async function saveSalesData(monthKey: string, canonicalName: string, data: { total: number; deals: number }): Promise<void> {
+  const key = `sales:${monthKey}:${canonicalName}`;
+  await redis.set(key, JSON.stringify(data));
+}
 
 // ---------------------------------------------------------------------------
 // Amount extraction
@@ -57,7 +193,6 @@ function parseK(raw: string): number | null {
 }
 
 function extractAmount(text: string): number | null {
-  // 1. Upsell: "z 8k na 12k" → take the NEW (second) value
   const upsellMatch = text.match(
     /z\s+[\d]+(?:[,.]\d+)?\s*k?\s+na\s+([\d]+(?:[,.]\d+)?)\s*k\b/i
   );
@@ -66,14 +201,12 @@ function extractAmount(text: string): number | null {
     if (val) return val;
   }
 
-  // 2. K-shorthand: "15k", "3,5k"
   const kMatch = text.match(/\b([\d]+(?:[,.]\d+)?)\s*k\b/i);
   if (kMatch) {
     const val = parseK(kMatch[1] + "k");
     if (val) return val;
   }
 
-  // 3. Number + currency (handles "2997pln", "2997 pln", etc.)
   const currencyMatch = text.match(
     /\b([\d]{1,3}(?:[.,][\d]{3})*|[\d]+(?:[.,][\d]+)?)\s*(pln|zł|netto)\b/i
   );
@@ -87,7 +220,6 @@ function extractAmount(text: string): number | null {
     if (!isNaN(num) && num > 0) return Math.round(num);
   }
 
-  // 4. Standalone number ≥ 3 digits (fallback)
   const plainMatch = text.match(/\b(\d{3,})\b/);
   if (plainMatch) {
     const num = parseInt(plainMatch[1], 10);
@@ -117,12 +249,6 @@ function formatAmount(n: number): string {
   return n.toLocaleString("pl-PL", { minimumFractionDigits: 0, maximumFractionDigits: 0 });
 }
 
-function buildProgressBar(percent: number): string {
-  const clamped = Math.min(percent, 100);
-  const filled = Math.round(clamped / 10);
-  return "█".repeat(filled) + "░".repeat(10 - filled);
-}
-
 async function getDisplayName(userId: string): Promise<string> {
   try {
     const result = await app.client.users.info({ user: userId });
@@ -132,25 +258,6 @@ async function getDisplayName(userId: string): Promise<string> {
     console.error(`[getDisplayName] error for ${userId}:`, err);
     return userId;
   }
-}
-
-function findQuota(displayName: string, monthKey: string): number | null {
-  const dn = displayName.toLowerCase();
-  for (const [name, months] of Object.entries(QUOTAS)) {
-    const key = name.toLowerCase();
-    const parts = key.split(" ");
-    const firstName = parts[0];
-    const lastName = parts[parts.length - 1];
-    if (
-      dn.includes(key) ||
-      key.includes(dn) ||
-      dn.includes(firstName) ||
-      dn.includes(lastName)
-    ) {
-      return months[monthKey] ?? null;
-    }
-  }
-  return null;
 }
 
 const CONGRATS = [
@@ -204,55 +311,54 @@ app.message(SALES_KEYWORDS, async ({ message, say }) => {
 
     const userId = msg.user;
     const displayName = await getDisplayName(userId);
+    const canonicalName = getCanonicalName(displayName);
     const monthKey = getMonthKey();
 
-    // Ensure nested structure exists
-    salesData[monthKey] ??= {};
-    salesData[monthKey][userId] ??= { total: 0, deals: 0 };
+    const emoji = getRandomEmoji();
+    const maxim = getRandomMaxim();
+    const congrats = CONGRATS[Math.floor(Math.random() * CONGRATS.length)];
 
-    // Accumulate
-    salesData[monthKey][userId].total += amount;
-    salesData[monthKey][userId].deals += 1;
+    if (!canonicalName) {
+      console.log(`[DEAL] Unknown user: ${displayName} – responding without monthly tracking`);
+      const lines = [
+        `${emoji} ${congrats}, <@${userId}>!`,
+        ``,
+        `${emoji} Ten deal: *${formatAmount(amount)} PLN*`,
+        ``,
+        `_"${maxim}"_`,
+      ];
+      await say({ text: lines.join("\n"), thread_ts: msg.ts });
+      return;
+    }
 
-    const { total: newTotal, deals: dealCount } = salesData[monthKey][userId];
+    // Get current data from Redis (or initial state)
+    const currentData = await getSalesData(monthKey, canonicalName);
+    
+    // Update
+    currentData.total += amount;
+    currentData.deals += 1;
+    
+    // Save to Redis
+    await saveSalesData(monthKey, canonicalName, currentData);
+
+    const { total: newTotal, deals: dealCount } = currentData;
 
     const monthName = getPolishMonthName();
+    const year = new Date().getFullYear();
+
     console.log(
-      `[DEAL] ${displayName} +${formatAmount(amount)} PLN → ${monthName} total: ${formatAmount(newTotal)} PLN (${dealCount} deals)`
+      `[DEAL] ${canonicalName} +${formatAmount(amount)} PLN → ${monthName} ${year} total: ${formatAmount(newTotal)} PLN (${dealCount} deals)`
     );
 
-    const congrats = CONGRATS[Math.floor(Math.random() * CONGRATS.length)];
-    const quota = findQuota(displayName, monthKey);
-
-    const lines: string[] = [
-      `🎉 ${congrats}, <@${userId}>!`,
+    const lines = [
+      `${emoji} ${congrats}, <@${userId}>!`,
       ``,
-      `💰 Ten deal: *${formatAmount(amount)} PLN*`,
+      `${emoji} Ten deal: *${formatAmount(amount)} PLN*`,
+      `${emoji} Twój ${monthName} ${year}: *${formatAmount(newTotal)} PLN*`,
+      `${emoji} Liczba dealów: ${dealCount}`,
+      ``,
+      `_"${maxim}"_`,
     ];
-
-    const year = new Date().getFullYear();
-    const monthLabel = `${monthName} ${year}`;
-
-    if (quota) {
-      const percent = Math.round((newTotal / quota) * 1000) / 10;
-      const bar = buildProgressBar(percent);
-      const diff = quota - newTotal;
-      lines.push(
-        `📊 Twój ${monthLabel}: *${formatAmount(newTotal)} PLN* / ${formatAmount(quota)} PLN (${percent}%)`,
-        `${bar} ${percent}%`,
-        `🔢 Liczba dealów: ${dealCount}`,
-      );
-      if (diff > 0) {
-        lines.push(`🎯 Do celu brakuje: *${formatAmount(diff)} PLN*`);
-      } else {
-        lines.push(`🏆 Cel przekroczony o *${formatAmount(Math.abs(diff))} PLN*! Niesamowite!`);
-      }
-    } else {
-      lines.push(
-        `📊 Twój ${monthLabel}: *${formatAmount(newTotal)} PLN*`,
-        `🔢 Liczba dealów: ${dealCount}`,
-      );
-    }
 
     await say({ text: lines.join("\n"), thread_ts: msg.ts });
 
@@ -318,6 +424,9 @@ app.error(async (error) => {
 // ---------------------------------------------------------------------------
 (async () => {
   try {
+    await redis.connect();
+    console.log("✅ Redis połączony");
+
     await app.start();
     botStartedAt = new Date();
     botStatus = "running";
@@ -327,21 +436,8 @@ app.error(async (error) => {
     console.log(`✅ Połączono jako: ${auth.user} (team: ${auth.team})`);
     console.log(`⚡ Slack sales bot działa w Socket Mode!`);
     console.log(`📋 Słowa kluczowe: ${SALES_KEYWORDS.toString()}`);
-
-    // List joined channels
-    try {
-      const convs = await app.client.conversations.list({
-        types: "public_channel",
-        exclude_archived: true,
-        limit: 200,
-      });
-      const joined = (convs.channels ?? []).filter((c: Record<string, unknown>) => c["is_member"]);
-      if (joined.length === 0) {
-        console.warn("⚠️  Bot NIE jest członkiem żadnego kanału! Zaproś: /invite @bot");
-      } else {
-        console.log(`📢 Bot jest w ${joined.length} kanale(ach)`);
-      }
-    } catch {}
+    console.log(`💾 Dane zapisywane w Redis`);
+    console.log(`📝 Maksym załadowanych: ${MAXIMS.length}`);
 
   } catch (err) {
     botStatus = "error";
