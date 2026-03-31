@@ -1,6 +1,6 @@
 {
   "name": "slack-sales-bot",
-  "version": "2.0.0",
+  "version": "2.0.1",
   "description": "Slack bot tracking sales deals for Polish sales team with Redis persistence",
   "main": "dist/index.js",
   "scripts": {
