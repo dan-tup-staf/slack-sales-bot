@@ -71,7 +71,6 @@ const MAXIMS = [
   "Prawdziwy autorytet nie potrzebuje siły; potrzebuje dowodów na kompetencję i uczciwość.",
   "Przyznanie się do małej słabości na początku buduje gigantyczne zaufanie do wielkich zalet.",
   "Wpływ to nie manipulacja; to umiejętność wydobycia na światło dzienne argumentów.",
-  "Słowo „ponieważ" ma magiczną moc – ludzie chętniej spełnią prośbę, jeśli podasz im powód.",
   "Najtrudniej jest przekonać kogoś do zmiany, jeśli uderza ona w jego poczucie tożsamości.",
 
   // Ferdynand Kiepski
