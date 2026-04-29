@@ -1,33 +1,89 @@
 import { App } from "@slack/bolt";
 import http from "http";
-import fs from "fs";
-import path from "path";
+import https from "https";
 
 // ---------------------------------------------------------------------------
-// JSON file persistence (replaces Redis)
+// GitHub persistence — sales.json lives in the repo, survives restarts
 // ---------------------------------------------------------------------------
-const DATA_DIR = path.join(process.cwd(), "data");
-const DATA_FILE = path.join(DATA_DIR, "sales.json");
+const GH_TOKEN = process.env.GITHUB_TOKEN!;
+const GH_REPO = "dan-tup-staf/slack-sales-bot";
+const GH_FILE = "sales.json";
+const GH_API = `https://api.github.com/repos/${GH_REPO}/contents/${GH_FILE}`;
 
 type SalesEntry = { total: number; deals: number };
 type SalesStore = Record<string, Record<string, SalesEntry>>;
 
-function loadStore(): SalesStore {
+let store: SalesStore = {};
+let fileSha: string | null = null;
+
+function ghRequest(method: string, body?: string): Promise<{ status: number; data: any }> {
+  return new Promise((resolve, reject) => {
+    const url = new URL(GH_API);
+    const opts: https.RequestOptions = {
+      hostname: url.hostname,
+      path: url.pathname,
+      method,
+      headers: {
+        "Authorization": `token ${GH_TOKEN}`,
+        "Accept": "application/vnd.github.v3+json",
+        "User-Agent": "slack-sales-bot",
+        ...(body ? { "Content-Type": "application/json", "Content-Length": Buffer.byteLength(body) } : {}),
+      },
+    };
+    const req = https.request(opts, (res) => {
+      let raw = "";
+      res.on("data", (chunk) => (raw += chunk));
+      res.on("end", () => {
+        try {
+          resolve({ status: res.statusCode ?? 0, data: JSON.parse(raw) });
+        } catch {
+          resolve({ status: res.statusCode ?? 0, data: raw });
+        }
+      });
+    });
+    req.on("error", reject);
+    if (body) req.write(body);
+    req.end();
+  });
+}
+
+async function loadStore(): Promise<SalesStore> {
   try {
-    if (fs.existsSync(DATA_FILE)) {
-      return JSON.parse(fs.readFileSync(DATA_FILE, "utf-8"));
+    const { status, data } = await ghRequest("GET");
+    if (status === 200 && data.content) {
+      fileSha = data.sha;
+      const decoded = Buffer.from(data.content, "base64").toString("utf-8");
+      const parsed = JSON.parse(decoded);
+      if (Object.keys(parsed).length > 0) {
+        console.log(`📥 Załadowano dane z GitHub (sha: ${fileSha?.slice(0, 7)})`);
+        return parsed;
+      }
     }
   } catch (err) {
-    console.error("⚠️ Błąd odczytu sales.json, zaczynam od INITIAL_STATE:", err);
+    console.error("⚠️ Błąd odczytu z GitHub:", err);
   }
+  console.log("📦 Brak danych w GitHub, zaczynam od INITIAL_STATE");
   return structuredClone(INITIAL_STATE);
 }
 
-function saveStore(store: SalesStore): void {
-  if (!fs.existsSync(DATA_DIR)) {
-    fs.mkdirSync(DATA_DIR, { recursive: true });
+async function saveStore(data: SalesStore): Promise<void> {
+  try {
+    const content = Buffer.from(JSON.stringify(data, null, 2)).toString("base64");
+    const body: any = {
+      message: `[bot] update sales data`,
+      content,
+    };
+    if (fileSha) body.sha = fileSha;
+    const { status, data: resp } = await ghRequest("PUT", JSON.stringify(body));
+    if (status === 200 || status === 201) {
+      fileSha = resp.content?.sha ?? fileSha;
+      console.log(`📤 Zapisano dane do GitHub (sha: ${fileSha?.slice(0, 7)})`);
+    } else {
+      console.error(`⚠️ GitHub save failed (${status}):`, JSON.stringify(resp).slice(0, 200));
+    }
+  } catch (err) {
+    console.error("❌ Błąd zapisu do GitHub:", err);
   }
-  fs.writeFileSync(DATA_FILE, JSON.stringify(store, null, 2), "utf-8");
 }
 
 // ---------------------------------------------------------------------------
@@ -149,9 +205,6 @@ const INITIAL_STATE: SalesStore = {
   },
 };
 
-// Load store at startup
-let store = loadStore();
-
 // ---------------------------------------------------------------------------
 // Name mapping: Slack display name → canonical name
 // ---------------------------------------------------------------------------
@@ -165,6 +218,9 @@ const NAME_MAPPING: Record<string, string> = {
   "półchłopek": "Łukasz Półchłopek",
   "polchlopek": "Łukasz Półchłopek",
   "damian": "Damian",
+  "daniel": "Daniel",
+  "tupczyński": "Daniel",
+  "tupczynski": "Daniel",
 };
 
 function getCanonicalName(displayName: string): string | null {
@@ -178,7 +234,7 @@ function getCanonicalName(displayName: string): string | null {
 }
 
 // ---------------------------------------------------------------------------
-// Store helpers (replaces Redis get/set)
+// Store helpers
 // ---------------------------------------------------------------------------
 function getSalesData(monthKey: string, canonicalName: string): SalesEntry {
   const monthData = store[monthKey];
@@ -198,7 +254,7 @@ function getSalesData(monthKey: string, canonicalName: string): SalesEntry {
   return { total: 0, deals: 0 };
 }
 
-function updateSalesData(monthKey: string, canonicalName: string, amount: number): SalesEntry {
+async function updateSalesData(monthKey: string, canonicalName: string, amount: number): Promise<SalesEntry> {
   if (!store[monthKey]) store[monthKey] = {};
   if (!store[monthKey][canonicalName]) {
     const initial = INITIAL_STATE[monthKey]?.[canonicalName];
@@ -207,7 +263,7 @@ function updateSalesData(monthKey: string, canonicalName: string, amount: number
 
   store[monthKey][canonicalName].total += amount;
   store[monthKey][canonicalName].deals += 1;
-  saveStore(store);
+  await saveStore(store);
 
   return store[monthKey][canonicalName];
 }
@@ -360,7 +416,7 @@ app.message(SALES_KEYWORDS, async ({ message, say }) => {
       return;
     }
 
-    const { total: newTotal, deals: dealCount } = updateSalesData(monthKey, canonicalName, amount);
+    const { total: newTotal, deals: dealCount } = await updateSalesData(monthKey, canonicalName, amount);
 
     const monthName = getPolishMonthName();
     const year = new Date().getFullYear();
@@ -392,7 +448,6 @@ app.message(SALES_KEYWORDS, async ({ message, say }) => {
 // Health server
 // ---------------------------------------------------------------------------
 const HEALTH_PORT = Number(process.env.PORT ?? 3000);
-const processStartedAt = new Date();
 let botStatus: "starting" | "running" | "error" = "starting";
 let botStartedAt: Date | null = null;
 let lastError: string | null = null;
@@ -443,12 +498,7 @@ app.error(async (error) => {
 // ---------------------------------------------------------------------------
 (async () => {
   try {
-    // Ensure data directory exists
-    if (!fs.existsSync(DATA_DIR)) {
-      fs.mkdirSync(DATA_DIR, { recursive: true });
-    }
-
-    console.log(`💾 Dane w pliku: ${DATA_FILE}`);
+    store = await loadStore();
     console.log(`📦 Załadowano ${Object.keys(store).length} miesięcy danych`);
 
     await app.start();
