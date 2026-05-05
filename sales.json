@@ -1,1 +1,62 @@
-{}
+{
+  "2026-01": {
+    "Filip Sobel": {
+      "total": 169349,
+      "deals": 0
+    },
+    "Michał Łaszkiewicz": {
+      "total": 16896,
+      "deals": 0
+    },
+    "Łukasz Półchłopek": {
+      "total": 45476,
+      "deals": 0
+    },
+    "Damian": {
+      "total": 67369,
+      "deals": 0
+    }
+  },
+  "2026-02": {
+    "Filip Sobel": {
+      "total": 97322,
+      "deals": 0
+    },
+    "Michał Łaszkiewicz": {
+      "total": 29625,
+      "deals": 0
+    },
+    "Łukasz Półchłopek": {
+      "total": 14477,
+      "deals": 0
+    },
+    "Damian": {
+      "total": 77602,
+      "deals": 0
+    }
+  },
+  "2026-03": {
+    "Filip Sobel": {
+      "total": 118262,
+      "deals": 0
+    },
+    "Michał Łaszkiewicz": {
+      "total": 43487,
+      "deals": 0
+    },
+    "Łukasz Półchłopek": {
+      "total": 19976,
+      "deals": 0
+    },
+    "Damian": {
+      "total": 64228,
+      "deals": 0
+    }
+  },
+  "2026-05": {
+    "Filip Sobel": {
+      "total": 3500,
+      "deals": 1
+    }
+  }
+}
